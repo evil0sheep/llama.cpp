@@ -19,7 +19,7 @@
 #pragma warning(disable: 4244 4267) // possible loss of data
 #endif
 
-#define CL_DMMV_BLOCK_SIZE 32
+#define CL_DMMV_BLOCK_SIZE 16
 
 #ifndef K_QUANTS_PER_ITERATION
 #define K_QUANTS_PER_ITERATION 1
@@ -550,7 +550,89 @@ __kernel void dequantize_mul_mat_vec_q4_K(__global const struct block_q4_K * xx,
         barrier(CLK_LOCAL_MEM_FENCE);
     }
     if (tid == 0) {
-        dst[row] = tmp[0];
+        dst[0] = tmp[0];
+    }
+}
+
+__kernel void dequantize_mul_mat_vec_q4_K_new(__global const struct block_q4_K * xx, __local float* tmp, __global float* yy, __global float* dst, const int ncols) {
+
+    //to rename it later, just to test now
+    const uint32_t kmask1 = 0x3f3f3f3f;
+    const uint32_t kmask2 = 0x0f0f0f0f;
+    const uint32_t kmask3 = 0x03030303;
+
+    const int row = get_group_id(0);
+    const int num_blocks_per_row = ncols / QK_K;
+    const int ib0 = row*num_blocks_per_row;
+
+    const int tid = get_local_id(0);
+
+
+    uint4 vtmp;
+    uint *utmp = (uint *) &vtmp;
+    const uint8_t * sc = (const uint8_t *) &vtmp;
+
+    const uint8_t *scales = (const uint8_t*)&utmp[0];
+    const uint8_t *mins   = (const uint8_t*)&utmp[2];
+
+    __global const struct block_q4_K * x = xx + ib0;
+
+    float thread_sum = 0;
+
+    for (int i = 0; i < num_blocks_per_row; i += 1) {
+
+
+        // load qs and y
+        const uchar8 qs = vload8(tid, x[i].qs);
+        __global const float * byy = yy + 256 * i;
+        const float16 y16 = vload16(tid , byy);
+
+        // load scales
+        const float dall = vload_half(0, &x[i].d);
+        const float dmin = vload_half(0, &x[i].dmin);
+        vtmp = vload4(0, (__global const uint32_t *)x[i].scales);
+
+        // dequantize scales and mins 
+        utmp[3] = ((utmp[2] >> 4) & kmask2) | (((utmp[1] >> 6) & kmask3) << 4);
+        const uint uaux = utmp[1] & kmask1;
+        utmp[1] = (utmp[2] & kmask2) | (((utmp[0] >> 6) & kmask3) << 4);
+        utmp[2] = uaux;
+        utmp[0] &= kmask1;
+        // 256 qs per block, 8 scales/mins, so 32 qs per scale
+        // each thread handles 16 values, so two threads per scale
+        const float scale = dall * convert_half(scales[tid/2]);
+        const float min = dmin * convert_half(mins[tid/2]);
+
+        // dequantize qs
+        const uchar8 qh = qs >> (uchar)4;
+        const uchar8 ql = qs & (uchar)0xF;
+        const uchar16 q16 = shuffle2(qh, ql, (uchar16)(0, 8, 1, 9, 2, 10, 3, 11, 4, 12, 5, 13, 6, 14, 7, 15));
+        const float16 x16  = convert_float16((convert_half(scale) * convert_half16(q16)) + convert_half(min));
+       
+        // compute dot product
+        for(uint j = 0; j < 4; j++){
+            // const float4 y = vload4(j, byy);
+            const uint k = 4 * j;
+            const float4 x = shuffle(x16, (uint4)(k, k+1, k+2, k+3));
+            const float4 y = shuffle(y16, (uint4)(k, k+1, k+2, k+3));
+
+            thread_sum += dot(x, y);
+        }
+
+    }
+    tmp[tid] = thread_sum;
+
+    // sum up partial sums and write back result
+    barrier(CLK_LOCAL_MEM_FENCE);
+    for (int s=16; s>0; s>>=1) {
+        if (tid < s) {
+            tmp[tid] += tmp[tid + s];
+        }
+        barrier(CLK_LOCAL_MEM_FENCE);
+    }
+
+    if (tid == 1) {
+        dst[row] =  tmp[0];
     }
 }
 
@@ -599,6 +681,9 @@ __kernel void dequantize_mul_mat_vec_q5_K(__global const struct block_q5_K * xx,
         const float dall = vload_half(0, &x[i].d);
         const float dmin = vload_half(0, &x[i].dmin);
 
+    uint4 vtmp;
+    uint32_t *utmp = (uint32_t *) &vtmp;
+    const uint8_t * sc = (const uint8_t *) &vtmp;
         __global const uint16_t * a = (__global const uint16_t *)x[i].scales;
         aux[0] = a[im+0] & kmask1;
         aux[1] = a[im+2] & kmask1;
@@ -1137,7 +1222,7 @@ void ggml_cl_init(void) {
     CL_CHECK((convert_mul_mat_vec_f16_cl = clCreateKernel(program, "convert_mul_mat_vec_f16", &err), err));
     CL_CHECK((dequantize_mul_mat_vec_q2_K_cl = clCreateKernel(program, "dequantize_mul_mat_vec_q2_K", &err), err));
     CL_CHECK((dequantize_mul_mat_vec_q3_K_cl = clCreateKernel(program, "dequantize_mul_mat_vec_q3_K", &err), err));
-    CL_CHECK((dequantize_mul_mat_vec_q4_K_cl = clCreateKernel(program, "dequantize_mul_mat_vec_q4_K", &err), err));
+    CL_CHECK((dequantize_mul_mat_vec_q4_K_cl = clCreateKernel(program, "dequantize_mul_mat_vec_q4_K_new", &err), err));
     CL_CHECK((dequantize_mul_mat_vec_q5_K_cl = clCreateKernel(program, "dequantize_mul_mat_vec_q5_K", &err), err));
     CL_CHECK((dequantize_mul_mat_vec_q6_K_cl = clCreateKernel(program, "dequantize_mul_mat_vec_q6_K", &err), err));
 
@@ -1219,6 +1304,8 @@ static size_t ggml_cl_local_size(ggml_type type) {
 }
 
 static cl_kernel* ggml_get_dequantize_mul_mat_vec_cl(ggml_type type) {
+    // printf(" ggml_get_dequantize_mul_mat_vec_cl, type = %d\n", type);
+
     switch (type) {
         case GGML_TYPE_Q4_0:
             return &dequantize_mul_mat_vec_q4_0_cl;
@@ -1237,7 +1324,7 @@ static cl_kernel* ggml_get_dequantize_mul_mat_vec_cl(ggml_type type) {
         case GGML_TYPE_Q3_K:
             return &dequantize_mul_mat_vec_q3_K_cl;
         case GGML_TYPE_Q4_K:
-            return &dequantize_mul_mat_vec_q4_K_cl;
+;            return &dequantize_mul_mat_vec_q4_K_cl;
         case GGML_TYPE_Q5_K:
             return &dequantize_mul_mat_vec_q5_K_cl;
         case GGML_TYPE_Q6_K:
@@ -1643,7 +1730,71 @@ static void ggml_cl_mul_mat_f16(const ggml_tensor * src0, const ggml_tensor * sr
     ggml_cl_pool_free(d_Y, y_size);
     ggml_cl_pool_free(d_D, d_size);
 }
+// static void ggml_cl_mul_mat_q_f32(const ggml_tensor * src0, const ggml_tensor * src1, ggml_tensor * dst) {
+//     const int64_t ne00 = src0->ne[0];
+//     const int64_t ne01 = src0->ne[1];
+//     const int64_t ne02 = src0->ne[2];
+//     const int64_t ne03 = src0->ne[3];
 
+//     const int64_t ne10 = src1->ne[0];
+//     const int64_t ne11 = src1->ne[1];
+
+//     const int nb2  = dst->nb[2];
+//     const int nb3  = dst->nb[3];
+//     const ggml_type type = src0->type;
+//     const bool mul_mat_vec = ne11 == 1;
+
+//     const float alpha = 1.0f;
+//     const float beta = 0.0f;
+//     const int x_ne = ne01 * ne00;    
+//     const int y_ne = ne11 * ne10;
+//     const int d_ne = ne11 * ne01;
+//     const size_t q_sz = ggml_type_size(type) * x_ne / ggml_blck_size(type);
+
+//     size_t x_size;
+//     size_t y_size;
+//     size_t d_size;
+//     size_t q_size;
+//     cl_mem d_X;
+//     if (!mul_mat_vec) {
+//         d_X = ggml_cl_pool_malloc(sizeof(float) * x_ne, &x_size);
+//     }
+//     cl_mem d_Y = ggml_cl_pool_malloc(sizeof(float) * y_ne, &y_size);
+//     cl_mem d_D = ggml_cl_pool_malloc(sizeof(float) * d_ne, &d_size);
+//     cl_mem d_Q;
+//     if (src0->backend == GGML_BACKEND_CPU) {
+//         d_Q = ggml_cl_pool_malloc(q_sz, &q_size);
+//     }
+
+//     cl_kernel* dmmv = ggml_get_dequantize_mul_mat_vec_cl(type);
+
+
+//     CL_CHECK(ggml_cl_h2d_tensor_2d(queue, d_Q, 0, src0, 0, 0, NULL));
+
+//     CL_CHECK(ggml_cl_h2d_tensor_2d(queue, d_Y, 0, src1, 0, 0, NULL));
+
+//     // compute
+//     const size_t global = ne01 * CL_DMMV_BLOCK_SIZE;
+//     const size_t local = CL_DMMV_BLOCK_SIZE;
+//     const cl_int ncols = ne00;
+
+
+
+//     CL_CHECK(clSetKernelArg(*dmmv, 0, sizeof(cl_mem), &d_Q));
+//     CL_CHECK(clSetKernelArg(*dmmv, 1, sizeof(cl_mem), &d_Y));
+//     CL_CHECK(clSetKernelArg(*dmmv, 2, sizeof(cl_mem), &d_D));
+//     CL_CHECK(clSetKernelArg(*dmmv, 3, sizeof(cl_int), &ncols));
+//     CL_CHECK(clEnqueueNDRangeKernel(queue, *dmmv, 1, NULL, &global, &local, 0, NULL, NULL));
+
+//         // copy dst to host
+//     float * d = (float *) dst->data ;
+//     CL_CHECK(clEnqueueReadBuffer(queue, d_D, true, 0, sizeof(float) * d_ne, d, 0, NULL, NULL));
+//         CL_CHECK(clEnqueueNDRangeKernel(queue, *dmmv, 1, NULL, &global, &local, 0, NULL, NULL));
+
+//     CL_CHECK(clEnqueueReadBuffer(queue, d_D, true, 0, sizeof(float) * d_ne, d, 0, NULL, NULL));
+//     CL_CHECK(clFinish(queue));
+
+// }
 static void ggml_cl_mul_mat_q_f32(const ggml_tensor * src0, const ggml_tensor * src1, ggml_tensor * dst) {
     const int64_t ne00 = src0->ne[0];
     const int64_t ne01 = src0->ne[1];
@@ -1702,6 +1853,7 @@ static void ggml_cl_mul_mat_q_f32(const ggml_tensor * src0, const ggml_tensor * 
                 GGML_ASSERT(false);
             }
             if (mul_mat_vec) { // specialized dequantize_mul_mat_vec kernel
+
                 // copy src1 to device
                 events.emplace_back();
                 CL_CHECK(ggml_cl_h2d_tensor_2d(queue, d_Y, 0, src1, i03, i02, events.data() + ev_idx++));
@@ -1710,6 +1862,7 @@ static void ggml_cl_mul_mat_q_f32(const ggml_tensor * src0, const ggml_tensor * 
                 const size_t global = ne01 * CL_DMMV_BLOCK_SIZE;
                 const size_t local = CL_DMMV_BLOCK_SIZE;
                 const cl_int ncols = ne00;
+
                 events.emplace_back();
                 CL_CHECK(clSetKernelArg(*dmmv, 0, sizeof(cl_mem), &d_Q));
                 CL_CHECK(clSetKernelArg(*dmmv, 1, sizeof(float) * local, NULL));
@@ -1780,8 +1933,7 @@ bool ggml_cl_can_mul_mat(const struct ggml_tensor * src0, const struct ggml_tens
     // TODO: find the optimal values for these
     if ((src0->type == GGML_TYPE_F32 || src0->type == GGML_TYPE_F16 || ggml_is_quantized(src0->type)) &&
         src1->type == GGML_TYPE_F32 &&
-        dst->type == GGML_TYPE_F32 &&
-        ((ne0 >= 32 && ne1 >= 32 && ne10 >= 32) || src0->backend == GGML_BACKEND_GPU)) {
+        dst->type == GGML_TYPE_F32 ) {
         return true;
     }
 
@@ -1842,6 +1994,8 @@ void ggml_cl_transform_tensor(void * data, ggml_tensor * tensor) {
     const int64_t ne1 = tensor->ne[1];
     const int64_t ne2 = tensor->ne[2];
     const int64_t ne3 = tensor->ne[3];
+
+
 
     const ggml_type type = tensor->type;
     const size_t q_sz = ggml_type_size(type) * ne0 * ne1 * ne2 * ne3 / ggml_blck_size(type);
