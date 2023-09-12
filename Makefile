@@ -572,6 +572,9 @@ grammar-parser.o: common/grammar-parser.cpp common/grammar-parser.h
 train.o: common/train.cpp common/train.h
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
+clml.o: clml/clml.cpp clml/clml.h build-info.h ggml.o $(OBJS)
+	$(CXX) $(CXXFLAGS)  -c $< -o $@ -lOpenCL -g # -fsanitize=address -static-libasan -g
+
 libllama.so: llama.o ggml.o $(OBJS)
 	$(CXX) $(CXXFLAGS) -shared -fPIC -o $@ $^ $(LDFLAGS)
 
@@ -638,6 +641,12 @@ libllava.a: examples/llava/llava.cpp examples/llava/llava.h examples/llava/clip.
 
 llava-cli: examples/llava/llava-cli.cpp examples/llava/clip.h examples/llava/clip.cpp examples/llava/llava.h examples/llava/llava.cpp ggml.o llama.o $(COMMON_DEPS) $(OBJS)
 	$(CXX) $(CXXFLAGS) $(filter-out %.h,$^) -o $@ $(LDFLAGS) -Wno-cast-qual
+
+llama-opencl: examples/llama-opencl/llama-opencl.cpp build-info.h ggml.o llama.o common.o clml.o  $(OBJS)
+	$(CXX) $(CXXFLAGS) $(filter-out %.h,$^) -o $@ $(LDFLAGS) -lOpenCL  -g # -fsanitize=address -static-libasan -g
+
+clml-test: clml/test.cpp clml.o ggml.o $(OBJS)
+	$(CXX) $(CXXFLAGS) $(filter-out %.h,$^) -o $@ $(LDFLAGS) -lOpenCL -g # -fsanitize=address -static-libasan -g
 
 baby-llama: examples/baby-llama/baby-llama.cpp ggml.o llama.o $(COMMON_DEPS) train.o $(OBJS)
 	$(CXX) $(CXXFLAGS) $(filter-out %.h,$^) -o $@ $(LDFLAGS)
