@@ -248,7 +248,12 @@ clml_tensor clml_tensor_from_ggml(clml_context *ctx, const ggml_tensor *in){
     }
 
     CL_CHECK(clEnqueueWriteBuffer(ctx->queue, out.weights, CL_TRUE, 0, weights_size, weights_host, 0, NULL, NULL));
-    CL_CHECK(clEnqueueWriteBuffer(ctx->queue, out.metadata, CL_TRUE, 0, metadata_size, metadata_host, 0, NULL, NULL));
+    free(weights_host);
+    if(metadata_size > 0){
+        CL_CHECK(clEnqueueWriteBuffer(ctx->queue, out.metadata, CL_TRUE, 0, metadata_size, metadata_host, 0, NULL, NULL));
+        free(metadata_host);
+    }
+    
     return out;
 
 } 
