@@ -230,7 +230,6 @@ clml_tensor clml_tensor_from_ggml(clml_context *ctx, const ggml_tensor *in){
                     for(size_t j = 0; j < in->ne[0]/QK4_0; j++){
                         block_q4_0 * in_block = &in_row[j];
                         memcpy(out_weights_row + j * (QK4_0/2), in_block->qs, QK4_0 / 2);
-                        printf("d = %f\n", ggml_fp16_to_fp32(in_block->d));
                         memcpy(out_metadata_row + j * (sizeof(ggml_fp16_t)), &in_block->d, sizeof(ggml_fp16_t));
                     }
                 }
@@ -257,3 +256,10 @@ clml_tensor clml_tensor_from_ggml(clml_context *ctx, const ggml_tensor *in){
     return out;
 
 } 
+
+void clml_free_tensor(clml_tensor * x){
+    CL_CHECK(clReleaseMemObject(x->weights));
+    if(x->metadata != NULL){
+        CL_CHECK(clReleaseMemObject(x->metadata));
+    }
+}

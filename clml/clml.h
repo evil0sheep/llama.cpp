@@ -54,3 +54,4 @@ void clml_dequantize_tensor_q4_0(clml_tensor * x, float * y, int k);
 void clml_init(clml_context * ctx_out);
 
 clml_tensor clml_tensor_from_ggml(clml_context *ctx, const ggml_tensor *in );
+void clml_free_tensor(clml_tensor * x);
