@@ -65,6 +65,8 @@ static void dequantize_row_q4_0(const block_q4_0 * x, float * y, int k) {
 }
 
 void test_interleave(clml_context *clctx){
+    printf("\n%s\n", __func__ );
+
     constexpr size_t n = 1024 * 1024;
     float *input = (float *) malloc(n * sizeof(float));
     float *output_cpu = (float *) malloc(n * sizeof(float));
@@ -107,15 +109,67 @@ void test_interleave(clml_context *clctx){
     free(input);
     free(output_cpu);
     free(output_gpu);
+    ggml_free(ggctx);
     clml_free_tensor(&clt);
 }
 
 
+void test_interleave_2d(clml_context *clctx){
+    printf("\n%s\n", __func__ );
+    constexpr size_t n = 1024;
+    float *input = (float *) malloc(n * n * sizeof(float));
+    float *output_cpu = (float *) malloc(n * n * sizeof(float));
+    float *output_gpu = (float *) malloc(n * n * sizeof(float));
+    for(int i=0; i<n; i++){
+        for(int j=0; j<n; j++){
+            size_t idx = i*n + j;
+            input[idx] = idx/100.0f;        }
+    }
+
+    struct ggml_init_params params = {
+        .mem_size   = 4 * n * n * sizeof(float),
+        .mem_buffer = NULL,
+    };
+    struct ggml_context * ggctx = ggml_init(params);
+    ggml_tensor * ggt = ggml_new_tensor_2d(ggctx, GGML_TYPE_Q4_0, n, n);
+
+    // block_q4_0 q4_row[n/QK4_0];
+    
+    for(int i=0; i<n; i++){
+        quantize_row_q4_0_reference(input + i*n, (block_q4_0 *)ggt->data + i*n/QK4_0, n);
+        dequantize_row_q4_0((block_q4_0 *)ggt->data + i*n/QK4_0, output_cpu + i*n, n);
+    }
+
+    // for(int i=0; i<n * n; i++){
+    //   printf("%f %f\n", input[i], output_cpu[i]);
+    // }
+
+    clml_tensor clt = clml_tensor_from_ggml(clctx, ggt);
+
+    clml_dequantize_tensor_q4_0(&clt, output_gpu, n * n);
+
+    float max_diff_percent = 0;
+    size_t max_diff_idx = 0;
+    for(int i=0; i<n * n; i++){
+        float diff_percent =  fabsf((output_cpu[i] - output_gpu[i])/ output_cpu[i]);
+        if(diff_percent > max_diff_percent){
+        max_diff_percent = diff_percent;
+        max_diff_idx = i;
+        }
+    }
+    printf("max_diff = %f at %zu (%f vs %f)\n", max_diff_percent, max_diff_idx, output_cpu[max_diff_idx], output_gpu[max_diff_idx]);
+
+    free(input);
+    free(output_cpu);
+    free(output_gpu);
+    ggml_free(ggctx);
+    clml_free_tensor(&clt);
+}
+
 int main(void){
   clml_context ctx;
   clml_init(&ctx);
-//   for(int i=0; i<100; i++){
-//     test_interleave(&ctx);
-//   }
+
   test_interleave(&ctx);
+  test_interleave_2d(&ctx);
 }

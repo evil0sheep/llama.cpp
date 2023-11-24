@@ -85,9 +85,12 @@ void clml_dequantize_tensor_q4_0(clml_tensor * x, float * y, int k){
     CL_CHECK(clSetKernelArg(kernel, 4, sizeof(cl_uint), &x->weight_stride));
     CL_CHECK(clSetKernelArg(kernel, 5, sizeof(cl_uint), &x->metadata_stride));
 
-    size_t num_workgroups = NUM_CORES * std::min(x->ne[0]/NUM_CORES, (size_t) MAX_WARPS_PER_CORE);
-    size_t global_work_size[2] = {WARP_SIZE, num_workgroups};
-    size_t local_work_size[2] = {WARP_SIZE, 1};
+
+
+    size_t warps_per_core = std::min(x->ne[1]/NUM_CORES + 1, (size_t) MAX_WARPS_PER_CORE);
+
+    size_t global_work_size[2] = {WARP_SIZE, NUM_CORES * warps_per_core};
+    size_t local_work_size[2] = {WARP_SIZE, warps_per_core};
     CL_CHECK(clEnqueueNDRangeKernel(x->ctx->queue, kernel, 2, NULL, global_work_size, local_work_size, 0, NULL, NULL));
     CL_CHECK(clFinish(x->ctx->queue));
 
